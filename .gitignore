@@ -1,0 +1,22 @@
+# Simulation outputs
+sim/*.vvp
+sim/waveforms/*.vcd
+sim/waveforms/*.fst
+sim/waveforms/*.ghw
+
+# Logs
+*.log
+*.out
+
+# Tool/build folders
+work/
+transcript
+*.jou
+*.wdb
+*.vcd
+*.vvp
+
+# OS/editor junk
+.DS_Store
+Thumbs.db
+.vscode/
