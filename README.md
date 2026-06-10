@@ -1,1 +1,1 @@
-# RISC-V-Hardware-Acceleration-Matrix-Multiply-Dot-Product-Coprocessor
+# RISC-V-Hardware-Acceleration-Matrix-Multiply-Dot-Product
