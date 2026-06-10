@@ -1,310 +1,326 @@
 `timescale 1ns/1ps
-`default_nettype none
 
 module dot_product_accel_tb;
 
-    localparam int ELEM_WIDTH   = 8;
-    localparam int NUM_ELEMS    = 4;
-    localparam int RESULT_WIDTH = 32;
-    localparam int VEC_WIDTH    = ELEM_WIDTH * NUM_ELEMS;
-    localparam int CLK_PERIOD   = 10;
-    localparam int MAX_WAIT_CYCLES = 20;
+  localparam int ELEM_WIDTH       = 8;
+  localparam int NUM_ELEMS        = 4;
+  localparam int RESULT_WIDTH     = 32;
+  localparam int CLK_PERIOD_NS    = 10;
+  localparam int MAX_WAIT_CYCLES  = 20;
+  localparam int NUM_RANDOM_TESTS = 100;
 
-    logic clk;
-    logic rst_n;
-    logic start;
-    logic [VEC_WIDTH-1:0] vec_a;
-    logic [VEC_WIDTH-1:0] vec_b;
-    logic [RESULT_WIDTH-1:0] result;
-    logic busy;
-    logic done;
+  logic clk;
+  logic rst_n;
+  logic start;
+  logic [ELEM_WIDTH*NUM_ELEMS-1:0] vec_a;
+  logic [ELEM_WIDTH*NUM_ELEMS-1:0] vec_b;
+  logic [RESULT_WIDTH-1:0] result;
+  logic busy;
+  logic done;
 
-    int unsigned num_tests;
-    int unsigned num_fails;
+  int unsigned tests_run;
+  int unsigned failures;
 
-    dot_product_accel #(
-        .ELEM_WIDTH(ELEM_WIDTH),
-        .NUM_ELEMS(NUM_ELEMS),
-        .RESULT_WIDTH(RESULT_WIDTH)
-    ) dut (
-        .clk    (clk),
-        .rst_n  (rst_n),
-        .start  (start),
-        .vec_a  (vec_a),
-        .vec_b  (vec_b),
-        .result (result),
-        .busy   (busy),
-        .done   (done)
-    );
+  dot_product_accel #(
+    .ELEM_WIDTH   (ELEM_WIDTH),
+    .NUM_ELEMS    (NUM_ELEMS),
+    .RESULT_WIDTH (RESULT_WIDTH)
+  ) dut (
+    .clk    (clk),
+    .rst_n  (rst_n),
+    .start  (start),
+    .vec_a  (vec_a),
+    .vec_b  (vec_b),
+    .result (result),
+    .busy   (busy),
+    .done   (done)
+  );
 
-    initial begin
-        clk = 1'b0;
-        forever #(CLK_PERIOD/2) clk = ~clk;
+  initial begin
+    clk = 1'b0;
+  end
+
+  always #(CLK_PERIOD_NS/2) clk = ~clk;
+
+  function automatic logic [RESULT_WIDTH-1:0] golden_dot(
+    input logic [ELEM_WIDTH*NUM_ELEMS-1:0] a,
+    input logic [ELEM_WIDTH*NUM_ELEMS-1:0] b
+  );
+    int i;
+    logic [RESULT_WIDTH-1:0] acc;
+    logic [ELEM_WIDTH-1:0] a_elem;
+    logic [ELEM_WIDTH-1:0] b_elem;
+
+    begin
+      acc = '0;
+
+      for (i = 0; i < NUM_ELEMS; i = i + 1) begin
+        a_elem = a[i*ELEM_WIDTH +: ELEM_WIDTH];
+        b_elem = b[i*ELEM_WIDTH +: ELEM_WIDTH];
+        acc = acc + (a_elem * b_elem);
+      end
+
+      golden_dot = acc;
+    end
+  endfunction
+
+  task automatic reset_dut;
+    begin
+      start = 1'b0;
+      vec_a = '0;
+      vec_b = '0;
+      rst_n = 1'b0;
+
+      repeat (3) @(posedge clk);
+
+      rst_n = 1'b1;
+
+      repeat (2) @(posedge clk);
+    end
+  endtask
+
+  task automatic wait_for_done(output bit done_seen);
+    int wait_cycles;
+
+    begin
+      done_seen   = 1'b0;
+      wait_cycles = 0;
+
+      while ((done !== 1'b1) && (wait_cycles < MAX_WAIT_CYCLES)) begin
+        @(posedge clk);
+        wait_cycles = wait_cycles + 1;
+      end
+
+      if (done === 1'b1) begin
+        done_seen = 1'b1;
+      end
+    end
+  endtask
+
+  task automatic report_result(
+    input string test_name,
+    input bit test_failed,
+    input logic [ELEM_WIDTH*NUM_ELEMS-1:0] a,
+    input logic [ELEM_WIDTH*NUM_ELEMS-1:0] b,
+    input logic [RESULT_WIDTH-1:0] expected,
+    input logic [RESULT_WIDTH-1:0] got
+  );
+    begin
+      tests_run = tests_run + 1;
+
+      if (test_failed) begin
+        failures = failures + 1;
+        $display("[FAIL] %-32s A=0x%08h B=0x%08h Expected=%0d Got=%0d",
+                 test_name, a, b, expected, got);
+      end else begin
+        $display("[PASS] %-32s A=0x%08h B=0x%08h Result=%0d",
+                 test_name, a, b, got);
+      end
+    end
+  endtask
+
+  task automatic check_reset_state;
+    bit test_failed;
+
+    begin
+      test_failed = 1'b0;
+
+      if (busy !== 1'b0) begin
+        test_failed = 1'b1;
+        $display("       Reset check failed: busy should be 0 after reset.");
+      end
+
+      if (done !== 1'b0) begin
+        test_failed = 1'b1;
+        $display("       Reset check failed: done should be 0 after reset.");
+      end
+
+      tests_run = tests_run + 1;
+
+      if (test_failed) begin
+        failures = failures + 1;
+        $display("[FAIL] %-32s busy=%b done=%b", "reset state", busy, done);
+      end else begin
+        $display("[PASS] %-32s busy=%b done=%b", "reset state", busy, done);
+      end
+    end
+  endtask
+
+  task automatic run_dot_test(
+    input string test_name,
+    input logic [ELEM_WIDTH*NUM_ELEMS-1:0] a,
+    input logic [ELEM_WIDTH*NUM_ELEMS-1:0] b
+  );
+    bit done_seen;
+    bit test_failed;
+    logic [RESULT_WIDTH-1:0] expected;
+    logic [RESULT_WIDTH-1:0] result_at_done;
+
+    begin
+      done_seen     = 1'b0;
+      test_failed   = 1'b0;
+      expected      = golden_dot(a, b);
+      result_at_done = '0;
+
+      @(negedge clk);
+      vec_a = a;
+      vec_b = b;
+      start = 1'b1;
+
+      @(negedge clk);
+      start = 1'b0;
+
+      wait_for_done(done_seen);
+
+      if (!done_seen) begin
+        test_failed = 1'b1;
+        $display("       Timeout waiting for done.");
+      end else begin
+        result_at_done = result;
+
+        if (result !== expected) begin
+          test_failed = 1'b1;
+          $display("       Result mismatch.");
+        end
+
+        if (busy !== 1'b0) begin
+          test_failed = 1'b1;
+          $display("       busy should be low when done is observed.");
+        end
+
+        @(posedge clk);
+
+        if (done !== 1'b0) begin
+          test_failed = 1'b1;
+          $display("       done should be a one-cycle pulse.");
+        end
+
+        repeat (2) begin
+          @(posedge clk);
+
+          if (result !== result_at_done) begin
+            test_failed = 1'b1;
+            $display("       result changed after operation completed.");
+          end
+        end
+      end
+
+      report_result(test_name, test_failed, a, b, expected, result);
+    end
+  endtask
+
+  task automatic test_start_while_busy_ignored;
+    bit done_seen;
+    bit test_failed;
+
+    logic [ELEM_WIDTH*NUM_ELEMS-1:0] first_a;
+    logic [ELEM_WIDTH*NUM_ELEMS-1:0] first_b;
+    logic [ELEM_WIDTH*NUM_ELEMS-1:0] second_a;
+    logic [ELEM_WIDTH*NUM_ELEMS-1:0] second_b;
+
+    logic [RESULT_WIDTH-1:0] expected_first;
+
+    begin
+      done_seen   = 1'b0;
+      test_failed = 1'b0;
+
+      first_a  = 32'h0403_0201;
+      first_b  = 32'h0807_0605;
+
+      second_a = 32'hFFFF_FFFF;
+      second_b = 32'hFFFF_FFFF;
+
+      expected_first = golden_dot(first_a, first_b);
+
+      @(negedge clk);
+      vec_a = first_a;
+      vec_b = first_b;
+      start = 1'b1;
+
+      @(negedge clk);
+      start = 1'b0;
+
+      @(negedge clk);
+
+      if (busy !== 1'b1) begin
+        test_failed = 1'b1;
+        $display("       busy should be high during an active operation.");
+      end
+
+      vec_a = second_a;
+      vec_b = second_b;
+      start = 1'b1;
+
+      @(negedge clk);
+      start = 1'b0;
+
+      wait_for_done(done_seen);
+
+      if (!done_seen) begin
+        test_failed = 1'b1;
+        $display("       Timeout waiting for done.");
+      end else begin
+        if (result !== expected_first) begin
+          test_failed = 1'b1;
+          $display("       start while busy was not ignored.");
+        end
+      end
+
+      report_result("start while busy ignored",
+                    test_failed,
+                    first_a,
+                    first_b,
+                    expected_first,
+                    result);
+    end
+  endtask
+
+  int i;
+  logic [ELEM_WIDTH*NUM_ELEMS-1:0] rand_a;
+  logic [ELEM_WIDTH*NUM_ELEMS-1:0] rand_b;
+
+  initial begin
+    $dumpfile("sim/waveforms/dot_product_accel_tb.vcd");
+    $dumpvars(0, dot_product_accel_tb);
+
+    tests_run = 0;
+    failures  = 0;
+
+    reset_dut();
+
+    check_reset_state();
+
+    run_dot_test("single element",     32'h0000_000C, 32'h0000_0007);
+    run_dot_test("basic dot product",  32'h0403_0201, 32'h0807_0605);
+    run_dot_test("all zero A",         32'h0000_0000, 32'h0607_0809);
+    run_dot_test("all zero B",         32'h0102_0304, 32'h0000_0000);
+    run_dot_test("all ones",           32'h0101_0101, 32'h0101_0101);
+    run_dot_test("mixed small values", 32'h0400_0201, 32'h0305_0007);
+    run_dot_test("max values",         32'hFFFF_FFFF, 32'hFFFF_FFFF);
+
+    test_start_while_busy_ignored();
+
+    for (i = 0; i < NUM_RANDOM_TESTS; i = i + 1) begin
+      rand_a = $urandom();
+      rand_b = $urandom();
+      run_dot_test($sformatf("random test %0d", i), rand_a, rand_b);
     end
 
-    initial begin
-        $dumpfile("sim/waveforms/dot_product_accel_tb.vcd");
-        $dumpvars(0, dot_product_accel_tb);
+    $display("");
+    $display("========================================");
+    $display("Dot Product Accelerator Test Summary");
+    $display("========================================");
+    $display("Tests run : %0d", tests_run);
+    $display("Failures  : %0d", failures);
+    $display("========================================");
+
+    if (failures == 0) begin
+      $display("ALL TESTS PASSED");
+      $finish;
+    end else begin
+      $display("TESTS FAILED");
+      $fatal(1);
     end
-
-    function automatic logic [31:0] pack4(
-        input logic [7:0] x0,
-        input logic [7:0] x1,
-        input logic [7:0] x2,
-        input logic [7:0] x3
-    );
-        pack4 = {x3, x2, x1, x0};
-    endfunction
-
-    function automatic logic [31:0] golden_dot_product(
-        input logic [31:0] a,
-        input logic [31:0] b
-    );
-        logic [31:0] ai;
-        logic [31:0] bi;
-        logic [31:0] sum;
-
-        sum = 32'd0;
-
-        for (int i = 0; i < 4; i++) begin
-            ai = (a >> (8*i)) & 32'h0000_00FF;
-            bi = (b >> (8*i)) & 32'h0000_00FF;
-            sum = sum + (ai * bi);
-        end
-
-        golden_dot_product = sum;
-    endfunction
-
-    task automatic reset_dut();
-        begin
-            rst_n = 1'b0;
-            start = 1'b0;
-            vec_a = '0;
-            vec_b = '0;
-
-            repeat (3) @(posedge clk);
-
-            if (result !== 32'd0) begin
-                $error("Reset failed: result should be 0");
-                num_fails++;
-            end
-
-            if (busy !== 1'b0) begin
-                $error("Reset failed: busy should be 0");
-                num_fails++;
-            end
-
-            if (done !== 1'b0) begin
-                $error("Reset failed: done should be 0");
-                num_fails++;
-            end
-
-            rst_n = 1'b1;
-            @(negedge clk);
-        end
-    endtask
-
-    task automatic pulse_start(
-        input logic [31:0] a,
-        input logic [31:0] b
-    );
-        begin
-            @(negedge clk);
-            vec_a  = a;
-            vec_b  = b;
-            start  = 1'b1;
-
-            @(negedge clk);
-            start  = 1'b0;
-        end
-    endtask
-
-    task automatic wait_for_done(output int cycles_waited);
-        begin
-            cycles_waited = 0;
-
-            while ((done !== 1'b1) && (cycles_waited <= MAX_WAIT_CYCLES)) begin
-                @(negedge clk);
-                cycles_waited++;
-            end
-
-            if (done !== 1'b1) begin
-                $error("Timeout waiting for done");
-                num_fails++;
-            end
-        end
-    endtask
-
-    task automatic run_and_check(
-        input logic [31:0] a,
-        input logic [31:0] b,
-        input string test_name
-    );
-        logic [31:0] expected;
-        int cycles;
-
-        begin
-            num_tests++;
-            expected = golden_dot_product(a, b);
-
-            pulse_start(a, b);
-
-            if (busy !== 1'b1) begin
-                $error("[%s] busy should be high after start", test_name);
-                num_fails++;
-            end
-
-            wait_for_done(cycles);
-
-            if (result !== expected) begin
-                $error("[%s] Result mismatch. A=%h B=%h Expected=%0d Got=%0d",
-                       test_name, a, b, expected, result);
-                num_fails++;
-            end else begin
-                $display("[PASS] %-30s A=%h B=%h Result=%0d Cycles=%0d",
-                         test_name, a, b, result, cycles);
-            end
-
-            if (cycles != NUM_ELEMS) begin
-                $error("[%s] Expected latency of %0d cycles, got %0d",
-                       test_name, NUM_ELEMS, cycles);
-                num_fails++;
-            end
-
-            if (busy !== 1'b0) begin
-                $error("[%s] busy should be low when done is high", test_name);
-                num_fails++;
-            end
-
-            @(negedge clk);
-
-            if (done !== 1'b0) begin
-                $error("[%s] done should only pulse for one cycle", test_name);
-                num_fails++;
-            end
-
-            repeat (2) @(negedge clk);
-
-            if (result !== expected) begin
-                $error("[%s] result should remain stable after done", test_name);
-                num_fails++;
-            end
-        end
-    endtask
-
-    task automatic test_start_while_busy();
-        logic [31:0] a1;
-        logic [31:0] b1;
-        logic [31:0] a2;
-        logic [31:0] b2;
-        logic [31:0] expected1;
-        int cycles;
-
-        begin
-            num_tests++;
-
-            a1 = pack4(8'd1, 8'd2, 8'd3, 8'd4);
-            b1 = pack4(8'd5, 8'd6, 8'd7, 8'd8);
-
-            a2 = pack4(8'd10, 8'd20, 8'd30, 8'd40);
-            b2 = pack4(8'd1,  8'd2,  8'd3,  8'd4);
-
-            expected1 = golden_dot_product(a1, b1);
-
-            pulse_start(a1, b1);
-
-            @(negedge clk);
-
-            if (busy !== 1'b1) begin
-                $error("[start while busy] DUT should be busy before second start attempt");
-                num_fails++;
-            end
-
-            vec_a = a2;
-            vec_b = b2;
-            start = 1'b1;
-
-            @(negedge clk);
-            start = 1'b0;
-
-            wait_for_done(cycles);
-
-            if (result !== expected1) begin
-                $error("[start while busy] Accelerator should ignore start while busy. Expected=%0d Got=%0d",
-                       expected1, result);
-                num_fails++;
-            end else begin
-                $display("[PASS] start while busy ignored correctly");
-            end
-
-            @(negedge clk);
-
-            run_and_check(a2, b2, "operation after ignored start");
-        end
-    endtask
-
-    initial begin
-        num_tests = 0;
-        num_fails = 0;
-
-        reset_dut();
-
-        run_and_check(
-            pack4(8'd12, 8'd0, 8'd0, 8'd0),
-            pack4(8'd7,  8'd0, 8'd0, 8'd0),
-            "single element"
-        );
-
-        run_and_check(
-            pack4(8'd1, 8'd2, 8'd3, 8'd4),
-            pack4(8'd5, 8'd6, 8'd7, 8'd8),
-            "basic dot product"
-        );
-
-        run_and_check(
-            pack4(8'd0, 8'd0, 8'd0, 8'd0),
-            pack4(8'd9, 8'd8, 8'd7, 8'd6),
-            "all zero A"
-        );
-
-        run_and_check(
-            pack4(8'd255, 8'd255, 8'd255, 8'd255),
-            pack4(8'd255, 8'd255, 8'd255, 8'd255),
-            "max values"
-        );
-
-        run_and_check(
-            pack4(8'd1, 8'd0, 8'd0, 8'd0),
-            pack4(8'd9, 8'd8, 8'd7, 8'd6),
-            "one-hot element 0"
-        );
-
-        run_and_check(
-            pack4(8'd0, 8'd0, 8'd0, 8'd1),
-            pack4(8'd9, 8'd8, 8'd7, 8'd6),
-            "one-hot element 3"
-        );
-
-        test_start_while_busy();
-
-        for (int t = 0; t < 100; t++) begin
-            run_and_check($urandom(), $urandom(), $sformatf("random test %0d", t));
-        end
-
-        $display("--------------------------------------------------");
-        $display("Tests run : %0d", num_tests);
-        $display("Failures  : %0d", num_fails);
-        $display("--------------------------------------------------");
-
-        if (num_fails == 0) begin
-            $display("ALL TESTS PASSED");
-        end else begin
-            $display("SOME TESTS FAILED");
-        end
-
-        $finish;
-    end
+  end
 
 endmodule
-
-`default_nettype wire
